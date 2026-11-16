@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Local Slides capture probe</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      padding: 32px;
+      font: 16px system-ui;
+      background: #fc37a2;
+      color: #201433;
+    }
+    h1 {
+      margin: 0 0 16px;
+    }
+    button,
+    input {
+      font: inherit;
+      padding: 10px 14px;
+    }
+    button {
+      cursor: pointer;
+    }
+    header {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 24px;
+    }
+    main {
+      display: flex;
+      align-items: start;
+      gap: 24px;
+    }
+    #stage {
+      width: 640px;
+      height: 360px;
+      flex-shrink: 0;
+      background: #0d7e64;
+    }
+    iframe {
+      border: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    aside {
+      max-width: 220px;
+    }
+    #status {
+      display: block;
+      min-height: 30px;
+      margin: 16px 0;
+    }
+    input {
+      width: 360px;
+      max-width: 100%;
+    }
+  </style>
+  <h1>Local Slides capture probe</h1>
+  <header>
+    <button id="audience">Open audience</button><button id="share">Share this tab</button
+    ><button id="stop">Stop capture</button><button id="reset">Reset demo</button>
+  </header>
+  <label>External demo URL <input id="url" placeholder="https://your-demo.example" /></label>
+  <button id="external">Load website</button>
+  <output id="status" aria-live="polite">Open the audience window, then share this tab.</output>
+  <main>
+    <div id="stage">
+      <iframe id="demo" title="Live demo" sandbox="allow-scripts allow-forms"></iframe>
+    </div>
+    <aside>
+      <h2>Private speaker notes</h2>
+      <p>
+        The bright pink notes area must never appear in the audience video. Check clicking, typing,
+        scrolling, resizing, and stopping capture.
+      </p>
+    </aside>
+  </main>
+  <script>
+    const stage = document.getElementById('stage');
+    let demo = document.getElementById('demo');
+    const status = document.getElementById('status');
+    let audience = null,
+      stream = null,
+      generation = 0;
+    const source = `<!doctype html><html><meta charset="utf-8"><style>*{box-sizing:border-box}body{margin:0;background:#0d7e64;color:white;font:20px system-ui;padding:30px}button,input{font:inherit;padding:8px}section{height:850px}footer{background:#f6c94c;color:#201433;padding:20px}</style><section><h2>One live app instance</h2><button id="count">Count: 0</button> <input aria-label="Demo name" placeholder="Type a name" style="width:190px"><p id="async">Waiting for an action</p><button id="later">Async change</button></section><footer>Scroll target</footer><script>let n=0;document.querySelector('#count').onclick=()=>document.querySelector('#count').textContent='Count: '+(++n);document.querySelector('#later').onclick=()=>setTimeout(()=>document.querySelector('#async').textContent='Async complete',150);<\/script></html>`;
+    function replaceDemo(url) {
+      const next = document.createElement('iframe');
+      next.id = 'demo';
+      next.title = 'Live demo';
+      next.setAttribute('sandbox', 'allow-scripts allow-forms');
+      if (url) next.src = url;
+      else next.srcdoc = source;
+      demo.replaceWith(next);
+      demo = next;
+    }
+    function resetDemo() {
+      replaceDemo();
+    }
+    function poster(message = 'Demo paused') {
+      if (!audience || audience.closed) return;
+      const v = audience.document.querySelector('video');
+      v.srcObject = null;
+      v.hidden = true;
+      const p = audience.document.querySelector('p');
+      p.textContent = message;
+      p.hidden = false;
+    }
+    function stopCapture(message = 'Capture stopped. The audience sees the poster.') {
+      generation++;
+      const old = stream;
+      stream = null;
+      if (old) old.getTracks().forEach((t) => t.stop());
+      poster();
+      status.textContent = message;
+    }
+    function openAudience() {
+      if (audience && !audience.closed) {
+        audience.focus();
+        return;
+      }
+      audience = window.open('', '_blank', 'popup,width=960,height=640');
+      if (!audience) {
+        status.textContent = 'Allow pop-ups to open the audience window.';
+        return;
+      }
+      audience.document.write(
+        '<!doctype html><html lang="en"><meta charset="utf-8"><title>Local Slides audience probe</title><style>body{margin:0;background:#111;color:white;display:grid;place-items:center;min-height:100vh;font:24px system-ui}video{width:100%;height:100vh;object-fit:contain}video[hidden],p[hidden]{display:none}</style><video id="mirror" autoplay muted playsinline hidden></video><p>Demo paused</p></html>',
+      );
+      audience.document.close();
+      if (stream) attach();
+    }
+    function attach() {
+      if (!audience || audience.closed || !stream) return;
+      const v = audience.document.querySelector('video');
+      v.srcObject = stream;
+      v.hidden = false;
+      audience.document.querySelector('p').hidden = true;
+      v.play().catch(() => {});
+    }
+    async function share() {
+      if (!audience || audience.closed) {
+        status.textContent = 'Open the audience window first.';
+        return;
+      }
+      stopCapture('Select this speaker tab in the browser picker.');
+      const ticket = ++generation;
+      let pending;
+      try {
+        if (!navigator.mediaDevices?.getDisplayMedia || !window.CropTarget)
+          throw new Error('Region Capture is unavailable. Use desktop Chrome or Edge.');
+        pending = await navigator.mediaDevices.getDisplayMedia({
+          video: { frameRate: 30 },
+          audio: false,
+          preferCurrentTab: true,
+          selfBrowserSurface: 'include',
+          surfaceSwitching: 'exclude',
+        });
+        if (ticket !== generation) {
+          pending.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        const track = pending.getVideoTracks()[0];
+        if (track.getSettings().displaySurface !== 'browser')
+          throw new Error('Select the current browser tab, rather than a screen or window.');
+        if (typeof track.cropTo !== 'function')
+          throw new Error('Cropping is unavailable in this browser.');
+        const target = await CropTarget.fromElement(stage);
+        await track.cropTo(target);
+        if (ticket !== generation) {
+          pending.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        stream = pending;
+        track.addEventListener(
+          'ended',
+          () => {
+            if (stream === pending) stopCapture();
+          },
+          { once: true },
+        );
+        attach();
+        status.textContent = 'Mirroring ready. Only the demo area is shared.';
+      } catch (error) {
+        pending?.getTracks().forEach((t) => t.stop());
+        if (ticket === generation) {
+          poster();
+          status.textContent =
+            error.name === 'NotAllowedError'
+              ? 'Sharing was cancelled or denied. You can try again.'
+              : error.message;
+        }
+      }
+    }
+    document.querySelector('#audience').onclick = openAudience;
+    document.querySelector('#share').onclick = share;
+    document.querySelector('#stop').onclick = () => stopCapture();
+    document.querySelector('#reset').onclick = resetDemo;
+    document.querySelector('#external').onclick = () => {
+      const u = new URL(document.querySelector('#url').value);
+      if (!['http:', 'https:'].includes(u.protocol)) return;
+      replaceDemo(u.href);
+    };
+    window.addEventListener('beforeunload', () => {
+      stream?.getTracks().forEach((t) => t.stop());
+      audience?.close();
+    });
+    window.probe = {
+      stop: stopCapture,
+      get stream() {
+        return stream;
+      },
+      get generation() {
+        return generation;
+      },
+    };
+    resetDemo();
+  </script>
+</html>
